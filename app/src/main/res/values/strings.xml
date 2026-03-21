@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Battery Info Enabler</string>
+    <string name="module_description">Enable Battery Information for older Pixels</string>
+</resources>

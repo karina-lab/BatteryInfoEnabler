@@ -32,4 +32,4 @@ In addition to the standard fields, this module injects two exclusive hardware d
 ## Compatibility
 
 * **Devices**: Pixel 6 series and newer.
-* **OS**: Tested on Android 16 QRP3.
+* **OS**: Tested on Android 16 QPR3.

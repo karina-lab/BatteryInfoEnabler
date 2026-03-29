@@ -1,15 +1,15 @@
 package org.klab.batteryinfo
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Bundle
+import android.util.Log
 import android.view.View
-import de.robv.android.xposed.IXposedHookLoadPackage
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XC_MethodReplacement
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.XposedHelpers.findAndHookMethod
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+
+import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedInterface
+import io.github.libxposed.api.XposedModuleInterface
+
 import java.io.BufferedReader
 import java.io.DataOutputStream
 import java.io.InputStreamReader
@@ -20,71 +20,99 @@ import java.lang.reflect.Proxy
 import java.util.Enumeration
 import dalvik.system.DexFile
 
-class BatteryInfoEnabler : IXposedHookLoadPackage {
+@SuppressLint("PrivateApi", "BlockedPrivateApi")
+class BatteryInfoEnabler : XposedModule() {
 
     private var batteryHealthData: Class<*>? = null
     private var batteryHealthStatus: Class<*>? = null
     private var batteryFeatureFlags: Class<*>? = null
     private var batteryHealthUtils: Class<*>? = null
+    private var reduced = false
 
-    override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        if (lpparam.packageName == "com.android.settings") {
-            hookSettings(lpparam)
+    private companion object {
+        const val TAG = "BatteryInfoEnabler"
+    }
+
+    override fun onPackageLoaded(param: XposedModuleInterface.PackageLoadedParam) {
+        super.onPackageLoaded(param)
+        if (param.packageName == "com.android.settings") {
+            hookSettings(param)
         }
-        if (lpparam.packageName != "com.google.android.settings.intelligence") return
+        if (param.packageName != "com.google.android.settings.intelligence") return
 
-        if (findClassesIntelligence(lpparam)) {
-            XposedBridge.log("Successfully found classes for Settings Services")
+        if (findClassesIntelligence(param)) {
+            log(Log.INFO, TAG, "Found classes for Settings Services")
             hookIntelligence()
         } else {
-            XposedBridge.log("Failed to find classes for Settings Services")
+            log(Log.ERROR, TAG, "Failed to find classes for Settings Services")
         }
     }
 
-    private fun hookSettings(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookSettings(lpparam: XposedModuleInterface.PackageLoadedParam) {
         try {
-            val googleProvider = XposedHelpers.findClass(
-                "com.google.android.settings.fuelgauge.BatterySettingsFeatureProviderGoogleImpl",
-                lpparam.classLoader
-            )
-            findAndHookMethod(googleProvider, "isBatteryInfoEnabled", Context::class.java, XC_MethodReplacement.returnConstant(true))
-            findAndHookMethod(googleProvider, "isManufactureDateAvailable", Context::class.java, Long::class.javaPrimitiveType, XC_MethodReplacement.returnConstant(true))
-            findAndHookMethod(googleProvider, "isFirstUseDateAvailable", Context::class.java, Long::class.javaPrimitiveType, XC_MethodReplacement.returnConstant(true))
-            XposedBridge.log("Added Battery info entry")
+            val googleProvider = lpparam.defaultClassLoader.loadClass("com.google.android.settings.fuelgauge.BatterySettingsFeatureProviderGoogleImpl")
+            
+            val hookReturnTrue = object : XposedInterface.Hooker {
+                override fun intercept(chain: XposedInterface.Chain): Any {
+                    return true
+                }
+            }
+
+            try {
+                val m1 = googleProvider.getDeclaredMethod("isBatteryInfoEnabled", Context::class.java)
+                hook(m1).intercept(hookReturnTrue)
+                val m2 = googleProvider.getDeclaredMethod("isManufactureDateAvailable", Context::class.java, Long::class.javaPrimitiveType)
+                hook(m2).intercept(hookReturnTrue)
+                val m3 = googleProvider.getDeclaredMethod("isFirstUseDateAvailable", Context::class.java, Long::class.javaPrimitiveType)
+                hook(m3).intercept(hookReturnTrue)
+            } catch (ignored: NoSuchMethodException) {
+                // Fallback for different signatures
+                googleProvider.declaredMethods.forEach { m ->
+                    if (m.name in listOf("isBatteryInfoEnabled", "isManufactureDateAvailable", "isFirstUseDateAvailable")) {
+                        hook(m).intercept(hookReturnTrue)
+                    }
+                }
+            }
+            log(Log.INFO, TAG, "Added Battery info entry")
         } catch (t: Throwable) {
-            XposedBridge.log("Settings hook failed: $t")
+            log(Log.ERROR, TAG, "Failed to add Battery info entry: $t")
         }
 
         try {
-            findAndHookMethod(
-                "com.android.settings.dashboard.DashboardFragment",
-                lpparam.classLoader,
-                "onViewCreated",
-                View::class.java,
-                Bundle::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val fragment = param.thisObject
-                        if (!fragment.javaClass.name.contains("BatteryInfoFragment")) return
-
-                        val context = XposedHelpers.callMethod(fragment, "getContext") as? Context ?: return
-                        val screen = XposedHelpers.callMethod(fragment, "getPreferenceScreen") ?: return
-
-                        if (XposedHelpers.callMethod(screen, "findPreference", "battery_info_serial_number") == null) {
-                            val batterySerial = getBatterySerialRoot()
-                            if (batterySerial.isNotEmpty()) {
-                                addPrefSettings(context, screen, "battery_info_serial_number", "Serial number", "Tap to show info", "battery_info_first_use_date") {
-                                    batterySerial
+            val dashboardFragment = lpparam.defaultClassLoader.loadClass("com.android.settings.dashboard.DashboardFragment")
+            val onViewCreated = dashboardFragment.getDeclaredMethod("onViewCreated", View::class.java, Bundle::class.java)
+            
+            hook(onViewCreated).intercept(object : XposedInterface.Hooker {
+                override fun intercept(chain: XposedInterface.Chain): Any? {
+                    val result = chain.proceed()
+                    val fragment = chain.thisObject
+                    if (fragment != null && fragment.javaClass.name.contains("BatteryInfoFragment")) {
+                        try {
+                            val context = fragment.javaClass.getMethod("getContext").invoke(fragment) as? Context
+                            val screen = fragment.javaClass.getMethod("getPreferenceScreen").invoke(fragment)
+                            if (context != null && screen != null) {
+                                val findPreference = screen.javaClass.getMethod("findPreference", CharSequence::class.java)
+                                if (findPreference.invoke(screen, "battery_info_serial_number") == null) {
+                                    val batterySerial = getBatterySerialRoot()
+                                    if (batterySerial.isNotEmpty()) {
+                                        addPrefSettings(context, screen, "battery_info_serial_number", "Serial number", "Tap to show info", "battery_info_first_use_date") {
+                                            batterySerial
+                                        }
+                                    } else {
+                                        log(Log.ERROR, TAG, "Failed to get serial number")
+                                    }
                                 }
-                            } else {
-                                XposedBridge.log("Failed to get serial number")
                             }
+                        } catch (t: Throwable) {
+                            log(Log.ERROR, TAG, "Settings injection failed: $t")
                         }
                     }
+                    return result
                 }
-            )
+            })
+            log(Log.INFO, TAG, "Added serial number")
         } catch (t: Throwable) {
-            XposedBridge.log("Settings injection failed: $t")
+            log(Log.ERROR, TAG, "Failed to add serial number: $t")
         }
     }
 
@@ -98,58 +126,62 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
         clickAction: () -> String
     ) {
         try {
-            val prefClass = XposedHelpers.findClass("androidx.preference.Preference", context.classLoader)
-            val pref = XposedHelpers.newInstance(prefClass, context)
+            val prefClass = context.classLoader.loadClass("androidx.preference.Preference")
+            val pref = prefClass.getConstructor(Context::class.java).newInstance(context)
 
-            XposedHelpers.callMethod(pref, "setKey", key)
-            XposedHelpers.callMethod(pref, "setTitle", title)
-            XposedHelpers.callMethod(pref, "setSummary", summary)
-            XposedHelpers.callMethod(pref, "setCopyingEnabled", true)
+            prefClass.getMethod("setKey", String::class.java).invoke(pref, key)
+            prefClass.getMethod("setTitle", CharSequence::class.java).invoke(pref, title)
+            prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, summary)
+            
+            try {
+                prefClass.getMethod("setCopyingEnabled", Boolean::class.javaPrimitiveType).invoke(pref, true)
+            } catch (ignored: Exception) {}
 
             val storedSerial = clickAction()
-            val listenerClass = XposedHelpers.findClass("androidx.preference.Preference\$OnPreferenceClickListener", context.classLoader)
+            val listenerClass = context.classLoader.loadClass("androidx.preference.Preference\$OnPreferenceClickListener")
             val proxyListener = Proxy.newProxyInstance(
                 context.classLoader,
                 arrayOf(listenerClass),
                 object : InvocationHandler {
                     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
                         return if (method.name == "onPreferenceClick") {
-                            XposedHelpers.callMethod(pref, "setSummary", storedSerial)
+                            prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, storedSerial)
                             true
                         } else null
                     }
                 }
             )
-            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", proxyListener)
+            prefClass.getMethod("setOnPreferenceClickListener", listenerClass).invoke(pref, proxyListener)
 
-            val anchor = XposedHelpers.callMethod(screen, "findPreference", afterKey)
+            val findPreference = screen.javaClass.getMethod("findPreference", CharSequence::class.java)
+            val anchor = findPreference.invoke(screen, afterKey)
             if (anchor != null) {
-                val order = XposedHelpers.callMethod(anchor, "getOrder") as Int
-                XposedHelpers.callMethod(pref, "setOrder", order + 1)
+                val order = anchor.javaClass.getMethod("getOrder").invoke(anchor) as Int
+                prefClass.getMethod("setOrder", Int::class.javaPrimitiveType).invoke(pref, order + 1)
             }
-            XposedHelpers.callMethod(screen, "addPreference", pref)
-            XposedBridge.log("Added $title pref")
+            screen.javaClass.getMethod("addPreference", prefClass).invoke(screen, pref)
+            log(Log.INFO, TAG, "Added $title pref")
         } catch (t: Throwable) {
-            XposedBridge.log("Failed to add $title pref : $t")
+            log(Log.ERROR, TAG, "Failed to add $title pref : $t")
         }
     }
 
-    private fun findClassesIntelligence(lpparam: XC_LoadPackage.LoadPackageParam): Boolean {
-        XposedBridge.log("Starting dynamic class search...")
+    private fun findClassesIntelligence(lpparam: XposedModuleInterface.PackageLoadedParam): Boolean {
+        log(Log.INFO, TAG, "Starting dynamic class search...")
         try {
-            val dexFile = DexFile(lpparam.appInfo.sourceDir)
+            val dexFile = DexFile(lpparam.applicationInfo.sourceDir)
             var entries: Enumeration<String> = dexFile.entries()
 
             while (entries.hasMoreElements()) {
                 val className = entries.nextElement()
                 if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
-                    val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+                    val clazz = lpparam.defaultClassLoader.loadClass(className)
                     if (clazz.isEnum) {
                         val s = clazz.enumConstants?.contentToString() ?: ""
                         if (s.contains("NORMAL") && s.contains("CAPACITY_REDUCED")) {
                             batteryHealthStatus = clazz
-                            XposedBridge.log("Found BatteryHealthStatus class ->  $className")
+                            log(Log.INFO, TAG, "Found BatteryHealthStatus class ->  $className")
                             break
                         }
                     }
@@ -163,7 +195,7 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                 val className = entries.nextElement()
                 if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
-                    val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+                    val clazz = lpparam.defaultClassLoader.loadClass(className)
 
                     if (batteryHealthData == null && batteryHealthStatus != null && !clazz.isEnum && !clazz.isInterface) {
                         val f = clazz.declaredFields
@@ -171,7 +203,7 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                             && f[2].type == Int::class.javaPrimitiveType && f[3].type == batteryHealthStatus
                         ) {
                             batteryHealthData = clazz
-                            XposedBridge.log("Found BatteryHealthData class -> $className")
+                            log(Log.INFO, TAG, "Found BatteryHealthData class -> $className")
                         }
                     }
 
@@ -186,7 +218,7 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                             }
                             if (boolCount == 9 && longCount == 1) {
                                 logInterface = clazz
-                                XposedBridge.log("Found logInterface -> $className")
+                                log(Log.INFO, TAG, "Found logInterface -> $className")
                             }
                         }
                     }
@@ -199,11 +231,11 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                 val className = entries.nextElement()
                 if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
-                    val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+                    val clazz = lpparam.defaultClassLoader.loadClass(className)
 
                     if (batteryFeatureFlags == null && logInterface != null && logInterface.isAssignableFrom(clazz) && !clazz.isInterface) {
                         batteryFeatureFlags = clazz
-                        XposedBridge.log("Found BatteryFeatureFlags class -> $className")
+                        log(Log.INFO, TAG, "Found BatteryFeatureFlags class -> $className")
                     }
 
                     if (batteryHealthUtils == null && batteryHealthData != null) {
@@ -211,7 +243,7 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                             val p = m.parameterTypes
                             if (Modifier.isStatic(m.modifiers) && p.size == 2 && p[0] == Int::class.javaPrimitiveType && p[1] == batteryHealthData) {
                                 batteryHealthUtils = clazz
-                                XposedBridge.log("Found BatteryHealthUtils class -> $className")
+                                log(Log.INFO, TAG, "Found BatteryHealthUtils class -> $className")
                             }
                         }
                     }
@@ -219,52 +251,66 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log("Error: ${e.message}")
+            log(Log.ERROR, TAG, "Error: ${e.message}")
         }
         return batteryHealthStatus != null && batteryHealthData != null && batteryFeatureFlags != null
     }
 
-    private val reduced = booleanArrayOf(false)
-
     private fun hookIntelligence() {
         batteryFeatureFlags?.declaredMethods?.forEach { m ->
             if (m.returnType == Boolean::class.javaPrimitiveType && Modifier.isPublic(m.modifiers)) {
-                XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = true
+                hook(m).intercept(object : XposedInterface.Hooker {
+                    override fun intercept(chain: XposedInterface.Chain): Any {
+                        return true
                     }
                 })
             }
         }
 
-        XposedBridge.hookAllConstructors(batteryHealthData, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val statusNormal = XposedHelpers.getStaticObjectField(batteryHealthStatus, "b")
-                val statusReduced = XposedHelpers.getStaticObjectField(batteryHealthStatus, "c")
+        batteryHealthData?.declaredConstructors?.forEach { c ->
+            hook(c).intercept(object : XposedInterface.Hooker {
+                override fun intercept(chain: XposedInterface.Chain): Any? {
+                    val statusNormal = batteryHealthStatus?.getDeclaredField("b")?.let {
+                        it.isAccessible = true
+                        it.get(null)
+                    }
+                    val statusReduced = batteryHealthStatus?.getDeclaredField("c")?.let {
+                        it.isAccessible = true
+                        it.get(null)
+                    }
 
-                val capacity = calculateCapacity()
-                val performance = calculatePerformance()
-                val health = calculateHealthIndex(capacity, performance)
+                    val capacity = calculateCapacity()
+                    val performance = calculatePerformance()
+                    val health = calculateHealthIndex(capacity, performance)
 
-                param.args[0] = if (capacity > 0) capacity else 100
-                param.args[1] = performance
-                param.args[2] = health
-                if (capacity < 80 || performance < 80 || health < 80) {
-                    param.args[3] = statusReduced
-                    reduced[0] = true
-                } else {
-                    param.args[3] = statusNormal
+                    val args = chain.args.toTypedArray()
+                    if (args.size >= 4) {
+                        args[0] = capacity
+                        args[1] = performance
+                        args[2] = health
+                        if (capacity < 80 || performance < 80 || health < 80) {
+                            args[3] = statusReduced
+                            reduced = true
+                        } else {
+                            args[3] = statusNormal
+                            reduced = false
+                        }
+                    }
+                    log(Log.INFO, TAG, "Successfully injected battery health info! Max. capacity = ${args[0]}, performance index = ${args[1]}, health index = ${args[2]}")
+                    return chain.proceed(args)
                 }
-                XposedBridge.log("Successfully injected battery health info! Max. capacity = $capacity, performance index = $performance, health index = $health")
-            }
-        })
+            })
+        }
 
         batteryHealthUtils?.declaredMethods?.forEach { m ->
             if (m.returnType == batteryHealthStatus && m.parameterTypes.size == 1) {
-                XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val status = if (reduced[0]) "c" else "b"
-                        param.result = XposedHelpers.getStaticObjectField(batteryHealthStatus, status)
+                hook(m).intercept(object : XposedInterface.Hooker {
+                    override fun intercept(chain: XposedInterface.Chain): Any? {
+                        val fieldName = if (reduced) "c" else "b"
+                        return batteryHealthStatus?.getDeclaredField(fieldName)?.let {
+                            it.isAccessible = true
+                            it.get(null)
+                        } ?: chain.proceed()
                     }
                 })
             }
@@ -279,7 +325,7 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
         val path = "/sys/class/power_supply/battery/"
         val cf = readLongRoot(path + "charge_full")
         val cd = readLongRoot(path + "charge_full_design")
-        return if (cf > 0 && cd > 0) ((cf * 100) / cd).toInt() else -1
+        return if (cf > 0 && cd > 0) ((cf * 100) / cd).toInt() else 100
     }
 
     private fun calculatePerformance(): Int {
@@ -310,13 +356,14 @@ class BatteryInfoEnabler : IXposedHookLoadPackage {
         try {
             val p = Runtime.getRuntime().exec("su")
             val os = DataOutputStream(p.outputStream)
-            val `is` = BufferedReader(InputStreamReader(p.inputStream))
+            val isReader = BufferedReader(InputStreamReader(p.inputStream))
             os.writeBytes("$cmd\nexit\n")
             os.flush()
             var line: String?
-            while (`is`.readLine().also { line = it } != null) sb.append(line)
+            while (isReader.readLine().also { line = it } != null) sb.append(line)
             p.waitFor()
         } catch (ignored: Exception) {
+            log(Log.ERROR, TAG, "Root not granted! Can't get real device info.")
         }
         return sb.toString()
     }

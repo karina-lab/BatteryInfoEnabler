@@ -45,7 +45,8 @@ android {
 dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
-    compileOnly(libs.xposed.api)
+    compileOnly(libs.libxposed.api)
+    implementation(libs.libxposed.service)
 }
 
 java {

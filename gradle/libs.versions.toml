@@ -3,7 +3,7 @@ agp = "9.1.0"
 kotlin = "2.3.20"
 coreKtx = "1.18.0"
 appcompat = "1.7.1"
-libxposed = "101.0.0"
+libxposed = "101.0.1"
 libxposed-service = "101.0.0"
 
 [libraries]

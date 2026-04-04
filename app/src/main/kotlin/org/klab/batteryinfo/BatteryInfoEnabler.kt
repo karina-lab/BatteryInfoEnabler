@@ -18,6 +18,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.Enumeration
+import java.util.Locale
 import dalvik.system.DexFile
 
 @SuppressLint("PrivateApi", "BlockedPrivateApi")
@@ -66,12 +67,6 @@ class BatteryInfoEnabler : XposedModule() {
                 val m3 = googleProvider.getDeclaredMethod("isFirstUseDateAvailable", Context::class.java, Long::class.javaPrimitiveType)
                 hook(m3).intercept(hookReturnTrue)
             } catch (ignored: NoSuchMethodException) {
-                // Fallback for different signatures
-                googleProvider.declaredMethods.forEach { m ->
-                    if (m.name in listOf("isBatteryInfoEnabled", "isManufactureDateAvailable", "isFirstUseDateAvailable")) {
-                        hook(m).intercept(hookReturnTrue)
-                    }
-                }
             }
             log(Log.INFO, TAG, "Added Battery info entry")
         } catch (t: Throwable) {
@@ -92,14 +87,62 @@ class BatteryInfoEnabler : XposedModule() {
                             val screen = fragment.javaClass.getMethod("getPreferenceScreen").invoke(fragment)
                             if (context != null && screen != null) {
                                 val findPreference = screen.javaClass.getMethod("findPreference", CharSequence::class.java)
+                                val cd = getDesignCapacityRoot()
+                                val cf = getMaximumCapacityRoot()
+
+                                val cycleCountPref = findPreference.invoke(screen, "battery_info_cycle_count")
+                                val cycleOrder = if (cycleCountPref != null) {
+                                    cycleCountPref.javaClass.getMethod("getOrder").invoke(cycleCountPref) as Int
+                                } else -1
+                                
+                                var anchorKey = "battery_info_first_use_date"
+
+                                if (findPreference.invoke(screen, "battery_info_design_capacity") == null && cd > 0) {
+                                    addPrefSettings(context, screen, "battery_info_design_capacity", "Design capacity", null, anchorKey) {
+                                        "${cd / 1000} mAh"
+                                    }
+                                    if (cycleOrder != -1) {
+                                        val p = findPreference.invoke(screen, "battery_info_design_capacity")
+                                        p?.javaClass?.getMethod("setOrder", Int::class.javaPrimitiveType)?.invoke(p, cycleOrder)
+                                    }
+                                    anchorKey = "battery_info_design_capacity"
+                                }
+
+                                if (findPreference.invoke(screen, "battery_info_maximum_capacity") == null && cf > 0) {
+                                    addPrefSettings(context, screen, "battery_info_maximum_capacity", "Maximum capacity", null, anchorKey) {
+                                        val percent = if (cd > 0) " (${(cf * 100) / cd}%)" else ""
+                                        "${cf / 1000} mAh$percent"
+                                    }
+                                    if (cycleOrder != -1) {
+                                        val p = findPreference.invoke(screen, "battery_info_maximum_capacity")
+                                        p?.javaClass?.getMethod("setOrder", Int::class.javaPrimitiveType)?.invoke(p, cycleOrder + 1)
+                                    }
+                                    anchorKey = "battery_info_maximum_capacity"
+                                }
+
+                                if (cycleOrder != -1) {
+                                    cycleCountPref?.javaClass?.getMethod("setOrder", Int::class.javaPrimitiveType)?.invoke(cycleCountPref, cycleOrder + 2)
+                                    anchorKey = "battery_info_cycle_count"
+                                }
+
+                                if (findPreference.invoke(screen, "battery_info_temperature") == null) {
+                                    val temp = getTemperatureRoot()
+                                    if (temp != -1L) {
+                                        addPrefSettings(context, screen, "battery_info_temperature", "Temperature", null, anchorKey) {
+                                            formatTemperature(temp)
+                                        }
+                                        anchorKey = "battery_info_temperature"
+                                    }
+                                } else {
+                                    anchorKey = "battery_info_temperature"
+                                }
+
                                 if (findPreference.invoke(screen, "battery_info_serial_number") == null) {
                                     val batterySerial = getBatterySerialRoot()
                                     if (batterySerial.isNotEmpty()) {
-                                        addPrefSettings(context, screen, "battery_info_serial_number", "Serial number", "Tap to show info", "battery_info_first_use_date") {
+                                        addPrefSettings(context, screen, "battery_info_serial_number", "Serial number", "Tap to show info", anchorKey) {
                                             batterySerial
                                         }
-                                    } else {
-                                        log(Log.ERROR, TAG, "Failed to get serial number")
                                     }
                                 }
                             }
@@ -110,9 +153,9 @@ class BatteryInfoEnabler : XposedModule() {
                     return result
                 }
             })
-            log(Log.INFO, TAG, "Added serial number")
+            log(Log.INFO, TAG, "Hooked BatteryInfoFragment for extra info")
         } catch (t: Throwable) {
-            log(Log.ERROR, TAG, "Failed to add serial number: $t")
+            log(Log.ERROR, TAG, "Failed to hook BatteryInfoFragment: $t")
         }
     }
 
@@ -121,7 +164,7 @@ class BatteryInfoEnabler : XposedModule() {
         screen: Any,
         key: String,
         title: String,
-        summary: String,
+        summary: String?,
         afterKey: String,
         clickAction: () -> String
     ) {
@@ -131,27 +174,31 @@ class BatteryInfoEnabler : XposedModule() {
 
             prefClass.getMethod("setKey", String::class.java).invoke(pref, key)
             prefClass.getMethod("setTitle", CharSequence::class.java).invoke(pref, title)
-            prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, summary)
+            
+            val value = clickAction()
+            if (summary == null) {
+                prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, value)
+            } else {
+                prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, summary)
+                val listenerClass = context.classLoader.loadClass("androidx.preference.Preference\$OnPreferenceClickListener")
+                val proxyListener = Proxy.newProxyInstance(
+                    context.classLoader,
+                    arrayOf(listenerClass),
+                    object : InvocationHandler {
+                        override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
+                            return if (method.name == "onPreferenceClick") {
+                                prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, value)
+                                true
+                            } else null
+                        }
+                    }
+                )
+                prefClass.getMethod("setOnPreferenceClickListener", listenerClass).invoke(pref, proxyListener)
+            }
             
             try {
                 prefClass.getMethod("setCopyingEnabled", Boolean::class.javaPrimitiveType).invoke(pref, true)
             } catch (ignored: Exception) {}
-
-            val storedSerial = clickAction()
-            val listenerClass = context.classLoader.loadClass("androidx.preference.Preference\$OnPreferenceClickListener")
-            val proxyListener = Proxy.newProxyInstance(
-                context.classLoader,
-                arrayOf(listenerClass),
-                object : InvocationHandler {
-                    override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
-                        return if (method.name == "onPreferenceClick") {
-                            prefClass.getMethod("setSummary", CharSequence::class.java).invoke(pref, storedSerial)
-                            true
-                        } else null
-                    }
-                }
-            )
-            prefClass.getMethod("setOnPreferenceClickListener", listenerClass).invoke(pref, proxyListener)
 
             val findPreference = screen.javaClass.getMethod("findPreference", CharSequence::class.java)
             val anchor = findPreference.invoke(screen, afterKey)
@@ -256,7 +303,32 @@ class BatteryInfoEnabler : XposedModule() {
         return batteryHealthStatus != null && batteryHealthData != null && batteryFeatureFlags != null
     }
 
+    private fun checkAlreadySupported(): Boolean {
+        try {
+            val clazz = batteryFeatureFlags ?: return false
+            val instance = clazz.declaredFields.firstOrNull {
+                Modifier.isStatic(it.modifiers) && it.type == clazz
+            }?.let {
+                it.isAccessible = true
+                it.get(null)
+            } ?: return false
+
+            clazz.declaredMethods.forEach { m ->
+                if (m.returnType == Boolean::class.javaPrimitiveType && m.parameterTypes.isEmpty()) {
+                    if (m.invoke(instance) == true) return true
+                }
+            }
+        } catch (ignored: Throwable) {
+        }
+        return false
+    }
+
     private fun hookIntelligence() {
+        if (checkAlreadySupported()) {
+            log(Log.INFO, TAG, "Battery Health is already enabled, skipping")
+            return
+        }
+
         batteryFeatureFlags?.declaredMethods?.forEach { m ->
             if (m.returnType == Boolean::class.javaPrimitiveType && Modifier.isPublic(m.modifiers)) {
                 hook(m).intercept(object : XposedInterface.Hooker {
@@ -281,7 +353,7 @@ class BatteryInfoEnabler : XposedModule() {
 
                     val capacity = calculateCapacity()
                     val performance = calculatePerformance()
-                    val health = calculateHealthIndex(capacity, performance)
+                    val health = getHealthIndex()
 
                     val args = chain.args.toTypedArray()
                     if (args.size >= 4) {
@@ -321,15 +393,32 @@ class BatteryInfoEnabler : XposedModule() {
         return runRootCommand("cat /sys/class/power_supply/battery/serial_number").trim()
     }
 
+    private fun getDesignCapacityRoot(): Long {
+        return readLongRoot("/sys/class/power_supply/battery/charge_full_design")
+    }
+
+    private fun getMaximumCapacityRoot(): Long {
+        return readLongRoot("/sys/class/power_supply/battery/charge_full")
+    }
+
+    private fun getTemperatureRoot(): Long {
+        return readLongRoot("/sys/class/power_supply/battery/temp")
+    }
+
+    private fun getResistanceAvgRoot(): Long {
+        return readLongRoot("/sys/class/power_supply/battery/resistance_avg")
+    }
+    private fun getHealthIndex(): Int {
+        return readLongRoot("/sys/class/power_supply/battery/health_index").toInt()
+    }
     private fun calculateCapacity(): Int {
-        val path = "/sys/class/power_supply/battery/"
-        val cf = readLongRoot(path + "charge_full")
-        val cd = readLongRoot(path + "charge_full_design")
+        val cf = getMaximumCapacityRoot()
+        val cd = getDesignCapacityRoot()
         return if (cf > 0 && cd > 0) ((cf * 100) / cd).toInt() else 100
     }
 
     private fun calculatePerformance(): Int {
-        val res = (readLongRoot("/sys/class/power_supply/battery/resistance_avg") / 1000).toInt()
+        val res = (getResistanceAvgRoot() / 1000).toInt()
 
         return when {
             res <= 100 -> 100
@@ -339,13 +428,15 @@ class BatteryInfoEnabler : XposedModule() {
         }
     }
 
-    private fun calculateHealthIndex(capacity: Int, performance: Int): Int {
-        return (capacity + performance) / 2
+    private fun formatTemperature(temp: Long): String {
+        val celsius = if (temp > 1000 || temp < -500) temp / 1000.0 else temp / 10.0
+        return  "%.1f °C".format(celsius)
     }
 
     private fun readLongRoot(file: String): Long {
         return try {
-            runRootCommand("cat $file").trim().toLong()
+            val result = runRootCommand("cat $file").trim()
+            if (result.isEmpty()) -1L else result.toLong()
         } catch (e: Exception) {
             -1L
         }

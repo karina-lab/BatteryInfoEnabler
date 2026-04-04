@@ -1,4 +1,4 @@
-# Pixel Battery Info Enabler
+# Battery Info Enabler
 
 An LSPosed module that unlocks and enhances the native battery information for Pixel 6+ devices.
 
@@ -9,7 +9,7 @@ While Google officially introduced detailed battery metrics (Manufacture date, D
 ## Installation
 
 1. Install the APK.
-2. Enable the **Pixel Battery Info Enabler** module in **LSPosed Manager**.
+2. Enable the **Battery Info Enabler** module in **LSPosed Manager**.
 3.  Ensure **both** of the following are selected in the module's scope:
 * **Settings** (`com.android.settings`)
 * **Settings Services** (`com.google.android.settings.intelligence`)
@@ -24,17 +24,20 @@ The information is now distributed across two sections in your device settings:
 * **Manufacture date**: Original production date.
 * **Date of first use**: When the battery was first powered on.
 * **Cycle count**: Total charge cycles.
-* **Serial number**: Battery hardware identifier.
+* **Design capacity**: The battery's intended capacity when new.
+* **Maximum capacity**: Current capacity relative to design capacity.
+* **Temperature**: Current battery temperature.
+* **Serial number**: Unique hardware identifier.
 
 ### 2. Battery Health
 **Location:** `Settings` -> `Battery` -> `Battery Health`
-* **Maximum capacity**: Current health relative to design capacity.
+* **Maximum capacity**: Current capacity relative to design capacity.
 * **Health Notification**: Will tell you if the battery requires service due to:
     * Low maximum capacity (less than 80%).
     * High internal resistance.
-    * High cycle count.
+    * Low battery health.
 
 ## Compatibility
 
-* **Devices**: Pixel 6 series and newer. You don't need this on Pixel 9a and later.
+* **Devices**: Pixel 6 series and newer.
 * **OS**: Tested on Android 16 QPR3.

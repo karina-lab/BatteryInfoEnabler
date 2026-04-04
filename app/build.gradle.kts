@@ -10,8 +10,8 @@ android {
         applicationId = "org.klab.batteryinfo"
         minSdk = 34
         targetSdk = 36
-        versionCode = 300
-        versionName = "3.0.0"
+        versionCode = 310
+        versionName = "3.1.0"
     }
 
     buildTypes {
@@ -31,6 +31,7 @@ android {
             )
         }
     }
+    
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -39,12 +40,21 @@ android {
     kotlin {
         jvmToolchain(21)
     }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
 }
 
 
 dependencies {
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.core.ktx)
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
 }

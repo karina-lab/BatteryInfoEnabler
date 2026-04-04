@@ -10,8 +10,8 @@ android {
         applicationId = "org.klab.batteryinfo"
         minSdk = 34
         targetSdk = 36
-        versionCode = 310
-        versionName = "3.1.0"
+        versionCode = project.property("versionCode").toString().toInt()
+        versionName = project.property("versionName").toString()
     }
 
     buildTypes {
@@ -31,7 +31,7 @@ android {
             )
         }
     }
-    
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -52,7 +52,6 @@ android {
         }
     }
 }
-
 
 dependencies {
     compileOnly(libs.libxposed.api)

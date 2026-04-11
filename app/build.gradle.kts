@@ -9,7 +9,7 @@ android {
     defaultConfig {
         applicationId = "org.klab.batteryinfo"
         minSdk = 34
-        targetSdk = 36
+        targetSdk = 37
         versionCode = project.property("versionCode").toString().toInt()
         versionName = project.property("versionName").toString()
     }

@@ -351,7 +351,8 @@ class BatteryInfoEnabler : XposedModule() {
                         it.get(null)
                     }
 
-                    val capacity = calculateCapacity()
+                    var capacity = calculateCapacity()
+                    if (capacity > 100) { capacity = 100 }
                     val performance = calculatePerformance()
                     val health = getHealthIndex()
 

@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "org.klab.batteryinfo"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "org.klab.batteryinfo"

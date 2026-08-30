@@ -221,14 +221,13 @@ class BatteryInfoEnabler : XposedModule() {
 
             while (entries.hasMoreElements()) {
                 val className = entries.nextElement()
-                if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
                     val clazz = lpparam.defaultClassLoader.loadClass(className)
                     if (clazz.isEnum) {
                         val s = clazz.enumConstants?.contentToString() ?: ""
                         if (s.contains("NORMAL") && s.contains("CAPACITY_REDUCED")) {
                             batteryHealthStatus = clazz
-                            log(Log.INFO, TAG, "Found BatteryHealthStatus class ->  $className")
+                            log(Log.INFO, TAG, "Found BatteryHealthStatus class -> $className")
                             break
                         }
                     }
@@ -240,7 +239,6 @@ class BatteryInfoEnabler : XposedModule() {
             var logInterface: Class<*>? = null
             while (entries.hasMoreElements()) {
                 val className = entries.nextElement()
-                if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
                     val clazz = lpparam.defaultClassLoader.loadClass(className)
 
@@ -256,17 +254,20 @@ class BatteryInfoEnabler : XposedModule() {
 
                     if (logInterface == null && clazz.isInterface) {
                         val methods = clazz.declaredMethods
-                        if (methods.size == 10) {
-                            var boolCount = 0
-                            var longCount = 0
-                            for (m in methods) {
-                                if (m.returnType == Boolean::class.javaPrimitiveType) boolCount++
-                                else if (m.returnType == Long::class.javaPrimitiveType) longCount++
-                            }
-                            if (boolCount == 9 && longCount == 1) {
-                                logInterface = clazz
-                                log(Log.INFO, TAG, "Found logInterface -> $className")
-                            }
+                        var boolCount = 0
+                        var longCount = 0
+                        for (m in methods) {
+                            if (m.returnType == Boolean::class.javaPrimitiveType) boolCount++
+                            else if (m.returnType == Long::class.javaPrimitiveType) longCount++
+                        }
+
+                        val isNewVersion = methods.size == 14 && boolCount == 12 && longCount == 2
+                        val isOldVersion = methods.size == 10 && boolCount == 9 && longCount == 1
+
+                        if (isNewVersion || isOldVersion) {
+                            logInterface = clazz
+                            val verSuffix = if (isNewVersion) "(new)" else "(old)"
+                            log(Log.INFO, TAG, "Found logInterface $verSuffix -> $className")
                         }
                     }
                 } catch (ignored: Throwable) {
@@ -276,7 +277,6 @@ class BatteryInfoEnabler : XposedModule() {
             entries = dexFile.entries()
             while (entries.hasMoreElements()) {
                 val className = entries.nextElement()
-                if (className.contains(".") && !className.startsWith("defpackage.")) continue
                 try {
                     val clazz = lpparam.defaultClassLoader.loadClass(className)
 
